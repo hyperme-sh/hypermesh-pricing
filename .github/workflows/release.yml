@@ -58,7 +58,7 @@ jobs:
         id: push
         run: |
           set -euo pipefail
-          image="ghcr.io/fyberlabs/hypermesh-pricing"
+          image="ghcr.io/hyperme-sh/hypermesh-pricing"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}" python3 -c 'import os, sys; sys.path.insert(0, "scripts"); from bump_panopticon_pin import require_tag; require_tag(os.environ["TAG"])'
           fi
@@ -177,7 +177,7 @@ jobs:
         with:
           app-id: ${{ vars.PANOPTICON_BUMP_APP_ID }}
           private-key: ${{ secrets.PANOPTICON_BUMP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          owner: FyberLabs
           repositories: panopticon
           permission-contents: write
           permission-pull-requests: write
@@ -197,7 +197,7 @@ jobs:
       - name: Open or update the panopticon pin pull request
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PANOPTICON_OWNER: ${{ github.repository_owner }}
+          PANOPTICON_OWNER: FyberLabs
           PANOPTICON_REPO: panopticon
           PRICING_REPOSITORY: ${{ github.repository }}
           PRICING_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}

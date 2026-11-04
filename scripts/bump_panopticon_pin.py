@@ -22,8 +22,9 @@ import urllib.parse
 from dataclasses import dataclass
 
 COMPOSE_PATHS = ("docker-compose.yaml", "docker-compose.vm.yaml")
-IMAGE = "ghcr.io/fyberlabs/hypermesh-pricing"
-PIN_RE = re.compile(rf"{re.escape(IMAGE)}@sha256:[0-9a-f]{{64}}")
+IMAGE = "ghcr.io/hyperme-sh/hypermesh-pricing"
+LEGACY_IMAGE = "ghcr.io/fyberlabs/hypermesh-pricing"
+PIN_RE = re.compile(rf"(?:{re.escape(IMAGE)}|{re.escape(LEGACY_IMAGE)})@sha256:[0-9a-f]{{64}}")
 _TAG = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?"
 TAG_RE = re.compile(rf"^{_TAG}$")
 VERSION_IN_TEXT = re.compile(_TAG)
