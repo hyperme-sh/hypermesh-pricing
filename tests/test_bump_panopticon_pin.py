@@ -169,23 +169,23 @@ def test_title_body_and_branch():
     assert bump.pr_title(TAG) == "chore(pricing): bump hypermesh-pricing to v1.2.3"
     body = bump.pr_body(PRICING_REPO, TAG, f"sha256:{NEW}")
     assert "https://github.com/example/hypermesh-pricing/releases/tag/v1.2.3" in body
-    assert f"ghcr.io/fyberlabs/hypermesh-pricing@sha256:{NEW}" in body
+    assert f"ghcr.io/hyperme-sh/hypermesh-pricing@sha256:{NEW}" in body
     assert bump.branch_name(TAG) == "chore/pricing-pin-v1.2.3"
     with pytest.raises(ValueError):
         bump.assert_bump_branch("main")
 
 
 def test_pricing_image_ref_accepts_only_this_images_tags():
-    assert resolve.pricing_image_ref("ghcr.io/fyberlabs/hypermesh-pricing:v1.2.3")
-    assert resolve.pricing_image_ref("ghcr.io/fyberlabs/hypermesh-pricing:v1.2.3-rc.1")
-    assert resolve.pricing_image_ref("ghcr.io/fyberlabs/hypermesh-pricing:main")
+    assert resolve.pricing_image_ref("ghcr.io/hyperme-sh/hypermesh-pricing:v1.2.3")
+    assert resolve.pricing_image_ref("ghcr.io/hyperme-sh/hypermesh-pricing:v1.2.3-rc.1")
+    assert resolve.pricing_image_ref("ghcr.io/hyperme-sh/hypermesh-pricing:main")
     sha_tag = "sha-" + ("ab" * 32)
-    assert resolve.pricing_image_ref(f"ghcr.io/fyberlabs/hypermesh-pricing:{sha_tag}")
+    assert resolve.pricing_image_ref(f"ghcr.io/hyperme-sh/hypermesh-pricing:{sha_tag}")
     for bad in (
         "ghcr.io/example/other:v1.2.3",
-        "ghcr.io/fyberlabs/hypermesh-pricing:v1.2.3;rm",
-        "ghcr.io/fyberlabs/hypermesh-pricing:sha-abc",
-        "ghcr.io/fyberlabs/hypermesh-pricing:latest",
+        "ghcr.io/hyperme-sh/hypermesh-pricing:v1.2.3;rm",
+        "ghcr.io/hyperme-sh/hypermesh-pricing:sha-abc",
+        "ghcr.io/hyperme-sh/hypermesh-pricing:latest",
     ):
         with pytest.raises(ValueError):
             resolve.pricing_image_ref(bad)
@@ -195,13 +195,13 @@ def test_pricing_image_ref_accepts_github_sha_tag():
     # 73dddab. GITHUB_SHA is 40 hex, which is what :sha-<commit> uses.
     github_sha = "sha-73dddab269adc5915e4f860d16cab3c5fa989301"
     assert len(github_sha.removeprefix("sha-")) == 40
-    image = f"ghcr.io/fyberlabs/hypermesh-pricing:{github_sha}"
+    image = f"ghcr.io/hyperme-sh/hypermesh-pricing:{github_sha}"
     assert resolve.pricing_image_ref(image) == image
 
 
 def test_imagetools_digest_uses_the_top_level_line():
     text = (
-        "Name:      ghcr.io/fyberlabs/hypermesh-pricing:v1.2.3\n"
+        "Name:      ghcr.io/hyperme-sh/hypermesh-pricing:v1.2.3\n"
         "MediaType: application/vnd.oci.image.index.v1+json\n"
         f"Digest:    sha256:{NEW}\n"
         "\n"
@@ -214,7 +214,7 @@ def test_imagetools_digest_uses_the_top_level_line():
 
 
 def test_stale_version_comment_does_not_open_a_pull_request_when_the_digest_matches():
-    files = {path: text.replace(OLD, NEW) for path, text in _files().items()}
+    files = {path: text.replace(OLD, NEW).replace(bump.LEGACY_IMAGE, bump.IMAGE) for path, text in _files().items()}
     client = FakeGitHub(files)
     status = _run(client)
     assert "already pinned" in status
@@ -350,3 +350,14 @@ def test_release_workflow_bumps_on_a_hosted_runner_without_pull_request_secrets(
         "v*.*.*",
     ):
         assert phrase in readme
+
+
+def test_same_digest_in_legacy_namespace_still_migrates_the_image_owner():
+    files = {path: text.replace(OLD, NEW) for path, text in _files().items()}
+    client = FakeGitHub(files)
+    status = _run(client)
+    assert "opened" in status
+    assert len(client.prs) == 1
+    assert all(bump.IMAGE in value and bump.LEGACY_IMAGE not in value for value in client.branch.files.values())
+    assert "pull request already current" in _run(client)
+    assert len(client.prs) == 1

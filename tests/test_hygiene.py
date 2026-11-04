@@ -46,7 +46,7 @@ def test_ci_uses_github_hosted_runners_and_does_not_deploy():
     assert "refs/heads/main" in release
     assert "sha-${GITHUB_SHA}" in release
     assert 'tags:\n      - "v*"' in release or "- \"v*\"" in release
-    assert "ghcr.io/fyberlabs/hypermesh-pricing" in release
+    assert "ghcr.io/hyperme-sh/hypermesh-pricing" in release
     assert "image digest:" in release
     assert "scripts/smoke-image.sh" in release
     visibility = release.split("Set package visibility to public", 1)[1]
