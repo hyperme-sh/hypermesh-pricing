@@ -1,12 +1,206 @@
-name: Publication held by owner
+name: release
+
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to pin (vX.Y.Z)"
+        required: true
+        type: string
+      dry_run:
+        description: "Print the digest and compose diff and do not open a pull request"
+        required: false
+        type: boolean
+        default: false
+
+# Public repository. GitHub-hosted runners. There is no deploy job.
+# A push to main publishes :main and :sha-<commit>.
+# A v* tag publishes that tag. The bump job then resolves that digest and
+# opens or updates one pull request in the panopticon repository.
+# workflow_dispatch pins an image that is already in GHCR. dry_run stops
+# before any pull request. The bump job reads its App key only from the
+# panopticon-bump environment. It does not run for a pull request.
 permissions:
   contents: read
+
 jobs:
-  publication-not-authorized:
-    runs-on: [self-hosted, linux, x64, debrunner]
+  image:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Queue pushes of the same ref. A second main push must not retag :main
+    # between this job's docker push and its registry inspect.
+    concurrency:
+      group: hypermesh-pricing-image-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
-      - run: |
-          echo 'The owner has not authorized tagging or publication.' >&2
-          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -t hypermesh-pricing:candidate .
+      - name: Check startup and /healthz
+        run: bash scripts/smoke-image.sh hypermesh-pricing:candidate
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image and print digest
+        id: push
+        run: |
+          set -euo pipefail
+          image="ghcr.io/hyperme-sh/hypermesh-pricing"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}" python3 -c 'import os, sys; sys.path.insert(0, "scripts"); from bump_panopticon_pin import require_tag; require_tag(os.environ["TAG"])'
+          fi
+          tags=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tags+=("${GITHUB_REF_NAME}")
+          fi
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags+=("main")
+            tags+=("sha-${GITHUB_SHA}")
+          fi
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "no image tags for ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          push_log="$(mktemp)"
+          trap 'rm -f "$push_log"' EXIT
+          for tag in "${tags[@]}"; do
+            docker tag hypermesh-pricing:candidate "${image}:${tag}"
+            docker push "${image}:${tag}" | tee -a "$push_log"
+          done
+          pushed=""
+          while IFS= read -r line; do
+            case "$line" in
+              *"digest: sha256:"*)
+                one="$(printf '%s\n' "$line" | sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p')"
+                if [ -z "$one" ]; then
+                  continue
+                fi
+                if [ -n "$pushed" ] && [ "$pushed" != "$one" ]; then
+                  echo "docker push printed more than one digest" >&2
+                  exit 1
+                fi
+                pushed="$one"
+                ;;
+            esac
+          done < "$push_log"
+          if [ -z "$pushed" ]; then
+            echo "docker push did not print a digest" >&2
+            exit 1
+          fi
+          for tag in "${tags[@]}"; do
+            registry="$(IMAGE_REF="${image}:${tag}" python3 scripts/resolve_pricing_digest.py)" || exit 1
+            if [ "$registry" != "$pushed" ]; then
+              echo "registry digest for ${image}:${tag} does not match the digest from docker push (${pushed})" >&2
+              exit 1
+            fi
+          done
+          ref="${image}@${pushed}"
+          echo "Pin the running image by that digest. The tag can move; the digest cannot."
+          echo "image digest: ${ref}"
+          digest="${ref#*@}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "ref is not a digest pin" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf '%s\n' "image digest: ${ref}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Set package visibility to public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN usually cannot PATCH org package visibility. A miss
+          # must not fail the release: the image is already pushed. Do not
+          # write the step summary here; the digest line above stays last.
+          path="/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hypermesh-pricing"
+          set +e
+          body="$(gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "$path" \
+            -f visibility=public 2>&1)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "package visibility: public"
+            exit 0
+          fi
+          echo "WARNING: could not set the GHCR package visibility to public. The image was already pushed." >&2
+          echo "WARNING: one-time fix: set the package public in the org package settings, or link it to the repo." >&2
+          printf '%s\n' "$body" >&2
+          exit 0
+
+  # One pull request in panopticon. Not a deploy.
+  # The App id is the panopticon-bump environment variable PANOPTICON_BUMP_APP_ID.
+  # The App private key is that environment's secret. actions/create-github-app-token
+  # mints the App JWT in this job only. GITHUB_TOKEN is not used to write panopticon.
+  bump-panopticon:
+    needs: image
+    if: >-
+      always() &&
+      (needs.image.result == 'success' || needs.image.result == 'skipped') &&
+      github.event_name != 'pull_request' &&
+      github.event_name != 'pull_request_target' &&
+      (
+        (github.event_name == 'push' && github.ref_type == 'tag') ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-latest
+    environment: panopticon-bump
+    concurrency:
+      group: panopticon-pin-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PANOPTICON_BUMP_APP_ID }}
+          private-key: ${{ secrets.PANOPTICON_BUMP_APP_PRIVATE_KEY }}
+          owner: FyberLabs
+          repositories: panopticon
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Log in to GHCR
+        if: github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve dispatched tag digest
+        if: github.event_name == 'workflow_dispatch'
+        id: dispatched
+        env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/resolve_pricing_digest.py
+      - name: Open or update the panopticon pin pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PANOPTICON_OWNER: FyberLabs
+          PANOPTICON_REPO: panopticon
+          PRICING_REPOSITORY: ${{ github.repository }}
+          PRICING_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          PRICING_DIGEST: ${{ github.event_name == 'workflow_dispatch' && steps.dispatched.outputs.digest || needs.image.outputs.digest }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: python3 scripts/bump_panopticon_pin.py
