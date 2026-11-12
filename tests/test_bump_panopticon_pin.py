@@ -286,70 +286,16 @@ def test_base_move_updates_the_same_pull_request():
     assert f"hypermesh-pricing@sha256:{NEW}" in client.branch.files["docker-compose.yaml"]
 
 
-def test_release_workflow_bumps_on_a_hosted_runner_without_pull_request_secrets():
-    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    header, jobs = release.split("jobs:", 1)
-    image, bump_job = jobs.split("bump-panopticon:", 1)
-
-    assert "workflow_dispatch:" in header
-    assert "dry_run:" in header
-    assert "pull_request" not in header
-    assert "packages: write" not in header
-    assert release.count("packages: write") == 1
-    assert "packages: write" in image
-    assert "packages: write" not in bump_job
-    assert "PANOPTICON_BUMP" not in ci
-    assert release.count("runs-on:") == release.count("runs-on: ubuntu-latest") == 2
-    assert "if: github.event_name == 'push'" in image
-    assert "group: hypermesh-pricing-image-${{ github.ref }}" in image
-    assert "cancel-in-progress: false" in image
-    assert "PANOPTICON_BUMP_APP_PRIVATE_KEY" not in image
-    assert "id: push" in image
-    assert 'echo "digest=${digest}" >> "$GITHUB_OUTPUT"' in image
-    assert "RepoDigests" not in release
-    assert 'IMAGE_REF="${image}:${tag}" python3 scripts/resolve_pricing_digest.py' in image
-    assert "does not match the digest from docker push" in image
-    assert "from bump_panopticon_pin import require_tag" in image
-    assert "require_tag(os.environ[\"TAG\"])" in image
-
-    assert "environment: panopticon-bump" in bump_job
-    assert "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0" in bump_job
-    assert "vars.PANOPTICON_BUMP_APP_ID" in bump_job
-    assert "secrets.PANOPTICON_BUMP_APP_ID" not in release
-    assert "secrets.PANOPTICON_BUMP_APP_PRIVATE_KEY" in bump_job
-    assert "permission-contents: write" in bump_job
-    assert "permission-pull-requests: write" in bump_job
-    assert "repositories: panopticon" in bump_job
-    assert "steps.app-token.outputs.token" in bump_job
-    assert "scripts/bump_panopticon_pin.py" in bump_job
-    assert "scripts/resolve_pricing_digest.py" in bump_job
-    assert "github.event_name != 'pull_request'" in bump_job
-    assert "pull_request:" not in release
-    assert "pull_request_target:" not in release
-    assert "deploy:" not in release
-    visibility = release.split("Set package visibility to public", 1)[1]
-    assert "exit 1" not in visibility
-    assert "GITHUB_STEP_SUMMARY" not in visibility
-
-    for phrase in (
-        "hypermesh-pricing-bump",
-        "panopticon-bump",
-        "PANOPTICON_BUMP_APP_ID",
-        "PANOPTICON_BUMP_APP_PRIVATE_KEY",
-        "vars.PANOPTICON_BUMP_APP_ID",
-        "secrets.PANOPTICON_BUMP_APP_PRIVATE_KEY",
-        "contents:write",
-        "pull-requests:write",
-        "actions/create-github-app-token",
-        "docker-compose.yaml",
-        "docker-compose.vm.yaml",
-        "dry_run",
-        "chore(pricing): bump hypermesh-pricing to vX.Y.Z",
-        "v*.*.*",
-    ):
-        assert phrase in readme
+def test_release_workflow_no_longer_invokes_legacy_pin_writer():
+    release = (ROOT / ".github/workflows/release.yml").read_text()
+    assert 'scripts/bump_panopticon_pin.py' not in release
+    assert 'bump-panopticon:' not in release
+    assert 'PANOPTICON_BUMP_APP_PRIVATE_KEY' not in release
+    assert 'workflow_dispatch:' not in release
+    assert release.count('packages: write') == 1
+    assert 'cancel-in-progress: false' in release
+    assert "if: github.event_name == 'push'" in release
+    assert 'scripts/publish_image.py' in release
 
 
 def test_same_digest_in_legacy_namespace_still_migrates_the_image_owner():
